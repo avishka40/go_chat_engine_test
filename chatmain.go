@@ -3,7 +3,7 @@ package main
 import "github.com/gorilla/websocket"
 import(
   "net/http"
-  "encode/json"
+  "encoding/json"
 )
 type ClientManager struct {
 
@@ -38,12 +38,13 @@ var manager = ClientManager{
   clients: make(map[*Client]bool),
 
 }
+var upgrader =websocket.Upgrader{}
 /**
- * [should run forever with a go routine]
- * (manager* clientmanger)---> as i understand prohibits other type of data not to acesss the function
- * @param  {[type]} manager [description]
- * @return {[type]}         [description]
- */
+* [should run forever with a go routine]
+* (manager* clientmanger)---> as i understand prohibits other type of data not to acesss the function
+* @param  {[type]} manager [description]
+* @return {[type]}         [description]
+*/
 func (manager *ClientManager) start(){
 
   for
@@ -61,10 +62,10 @@ func (manager *ClientManager) start(){
       //remove client(unregistering) partially clear on the idea
       if _,ok :=manager.clients[conn]
       {
-      close(conn.send)
-      delete(manager.clients, conn)
-      jsonMessage,_:=json.Marshal(&Message{Content:"/A client has disconncted"})
-      manager.send(jsonMessage,conn)
+        close(conn.send)
+        delete(manager.clients, conn)
+        jsonMessage,_:=json.Marshal(&Message{Content:"/A client has disconncted"})
+        manager.send(jsonMessage,conn)
       }
       //BROADCASTING A message to all the clients
     case message := <-manager.broadcast:
@@ -81,64 +82,86 @@ func (manager *ClientManager) start(){
       }
     }
   }
+}
 // all funcs belows not mine copy paseted from the client example in github so try to understand them
-  func (manager *ClientManager) send(message []byte, ignore *Client) {
-      for conn := range manager.clients {
-          if conn != ignore {
-              conn.send <- message
-          }
-      }
+func (manager *ClientManager) send(message []byte, ignore *Client) {
+  for conn := range manager.clients {
+    if conn != ignore {
+      conn.send <- message
+    }
   }
+}
 
 
-  func (c *Client) read() {
-    defer func() {
+func (c *Client) read() {
+  defer func() {
+    manager.unregister <- c
+    c.socket.Close()
+    }()
+
+    for {
+      _, message, err := c.socket.ReadMessage()
+      if err != nil {
         manager.unregister <- c
         c.socket.Close()
-    }()
-
-    for {
-        _, message, err := c.socket.ReadMessage()
-        if err != nil {
-            manager.unregister <- c
-            c.socket.Close()
-            break
-        }
-        jsonMessage, _ := json.Marshal(&Message{Sender: c.id, Content: string(message)})
-        manager.broadcast <- jsonMessage
+        break
+      }
+      jsonMessage, _ := json.Marshal(&Message{Sender: c.id, Content: string(message)})
+      manager.broadcast <- jsonMessage
     }
-}
+  }
 
-func (c *Client) write() {
+  func (c *Client) write() {
     defer func() {
-        c.socket.Close()
-    }()
+      c.socket.Close()
+      }()
 
-    for {
+      for {
         select {
         case message, ok := <-c.send:
-            if !ok {
-                c.socket.WriteMessage(websocket.CloseMessage, []byte{})
-                return
-            }
+          if !ok {
+            c.socket.WriteMessage(websocket.CloseMessage, []byte{})
+            return
+          }
 
-            c.socket.WriteMessage(websocket.TextMessage, message)
+          c.socket.WriteMessage(websocket.TextMessage, message)
         }
+      }
     }
-}
 
-func wsPage(res http.ResponseWriter, req *http.Request) {
-    conn, error := (&websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}).Upgrade(res, req, nil)
-    if error != nil {
+    func wsPage(res http.ResponseWriter, req *http.Request) {
+      conn, error := (&websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}).Upgrade(res, req, nil)
+      if error != nil {
         http.NotFound(res, req)
         return
+      }
+      client := &Client{id: uuid.NewV4().String(), socket: conn, send: make(chan []byte)}
+
+      manager.register <- client
+
+      go client.read()
+      go client.write()
     }
-    client := &Client{id: uuid.NewV4().String(), socket: conn, send: make(chan []byte)}
 
-    manager.register <- client
+    func handleConnections(w http.ResponseWriter, r *http.Request)
+    {
+      //Upgrading the Get Request (initial ) to a WebSocket
+      ws,err := upgrader.Upgrade(w,r,nil)
+      if err != nil {
+        log.Fatal(err)
+      }
+      //closing the connection to WebSocker
+      defer ws.Close()
 
-    go client.read()
-    go client.write()
-}
+    }
+    func main(){
 
-}
+      fs := http.FileServer(http.Dir())
+      http.HandleFunc("/",fs)
+      http.HandleFunc("/ws", handleConnections)
+      go handleMessages()
+      log.Println("listening to the http server ")
+      err := http.ListenAndServe(":8000",nil)
+
+
+    }
